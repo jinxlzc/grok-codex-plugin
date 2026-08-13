@@ -138,7 +138,7 @@ const TOOLS = [
   }
 ];
 
-function buildCompanionArgs(name, args = {}) {
+export function buildCompanionArgs(name, args = {}) {
   const cwd = args.cwd ? ["--cwd", args.cwd] : [];
   switch (name) {
     case "codex_setup": {
@@ -291,22 +291,24 @@ async function handleRequest(message) {
   }
 }
 
-const rl = readline.createInterface({ input: process.stdin });
-rl.on("line", (line) => {
-  if (!line.trim()) {
-    return;
-  }
-  let message;
-  try {
-    message = JSON.parse(line);
-  } catch {
-    return;
-  }
-  if (message.method) {
-    handleRequest(message).catch((error) => {
-      if (message.id !== undefined) {
-        fail(message.id, -32603, error instanceof Error ? error.message : String(error));
-      }
-    });
-  }
-});
+if (import.meta.main ?? (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))) {
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    if (!line.trim()) {
+      return;
+    }
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (message.method) {
+      handleRequest(message).catch((error) => {
+        if (message.id !== undefined) {
+          fail(message.id, -32603, error instanceof Error ? error.message : String(error));
+        }
+      });
+    }
+  });
+}

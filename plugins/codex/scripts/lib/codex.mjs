@@ -909,7 +909,7 @@ export function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) 
     return {
       mode: "shared",
       label: "shared session",
-      detail: "This Claude session is configured to reuse one shared Codex runtime.",
+      detail: "This Grok host session is configured to reuse one shared Codex runtime.",
       endpoint
     };
   }

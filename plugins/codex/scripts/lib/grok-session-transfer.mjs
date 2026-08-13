@@ -243,7 +243,30 @@ export function resolveTransferSource(cwd, options = {}) {
   }
 
   const sessionId = env.CODEX_COMPANION_SESSION_ID || env.GROK_SESSION_ID || null;
-  const sessionDir = resolveGrokSessionDir(cwd, sessionId, env) ?? latestGrokSessionDir(cwd, env);
+  if (sessionId) {
+    const sessionDir = resolveGrokSessionDir(cwd, sessionId, env);
+    if (!sessionDir) {
+      const expectedTranscript = path.join(
+        grokHome(env),
+        "sessions",
+        encodeURIComponent(path.resolve(cwd)),
+        sessionId,
+        "chat_history.jsonl"
+      );
+      throw new Error(
+        `Could not find the transcript for the current Grok session "${sessionId}" at ${expectedTranscript}. ` +
+          "Retry from that Grok session after its transcript is saved, or pass --source <session-dir-or-chat_history.jsonl>."
+      );
+    }
+    return {
+      kind: "grok",
+      sourcePath: resolveGrokTranscriptPath(sessionDir),
+      sessionDir,
+      sessionId
+    };
+  }
+
+  const sessionDir = latestGrokSessionDir(cwd, env);
   if (!sessionDir) {
     throw new Error(
       "Could not identify the current Grok session. Retry with --source <session-dir-or-chat_history.jsonl>."

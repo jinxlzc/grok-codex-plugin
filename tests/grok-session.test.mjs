@@ -80,6 +80,45 @@ test("resolveTransferSource finds the Grok session for the current cwd", () => {
   assert.equal(source.sourcePath, path.join(sessionDir, "chat_history.jsonl"));
 });
 
+test("resolveTransferSource does not fall back when the identified Grok session transcript is missing", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo");
+  fs.mkdirSync(repo, { recursive: true });
+  writeGrokSession(home, repo, "sess-other", [
+    { type: "user", content: "This other session must not be transferred" }
+  ]);
+  const missingSessionDir = path.join(
+    home,
+    ".grok",
+    "sessions",
+    encodeURIComponent(repo),
+    "sess-current"
+  );
+  fs.mkdirSync(missingSessionDir, { recursive: true });
+  fs.writeFileSync(path.join(missingSessionDir, "summary.json"), JSON.stringify({ generated_title: "Current" }));
+
+  for (const sessionEnv of ["GROK_SESSION_ID", "CODEX_COMPANION_SESSION_ID"]) {
+    assert.throws(
+      () =>
+        resolveTransferSource(repo, {
+          env: {
+            HOME: home,
+            GROK_HOME: path.join(home, ".grok"),
+            [sessionEnv]: "sess-current"
+          }
+        }),
+      (error) => {
+        assert.match(error.message, /current Grok session "sess-current"/);
+        assert.match(error.message, /chat_history\.jsonl/);
+        assert.match(error.message, /--source/);
+        assert.doesNotMatch(error.message, /sess-other/);
+        return true;
+      },
+      sessionEnv
+    );
+  }
+});
+
 test("buildGrokHandoffPrompt includes conversation blocks", () => {
   const home = makeTempDir();
   const repo = path.join(home, "repo");

@@ -30,10 +30,11 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
 
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
+  const workspace = makeTempDir();
   installFakeCodex(binDir);
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -46,11 +47,12 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
 
 test("setup is ready without npm when Codex is already installed and authenticated", () => {
   const binDir = makeTempDir();
+  const workspace = makeTempDir();
   installFakeCodex(binDir);
   fs.symlinkSync(process.execPath, path.join(binDir, "node"));
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: {
       ...process.env,
       PATH: binDir
@@ -67,10 +69,11 @@ test("setup is ready without npm when Codex is already installed and authenticat
 
 test("setup trusts app-server API key auth even when login status alone would fail", () => {
   const binDir = makeTempDir();
+  const workspace = makeTempDir();
   installFakeCodex(binDir, "api-key-account-only");
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -85,10 +88,11 @@ test("setup trusts app-server API key auth even when login status alone would fa
 
 test("setup is ready when the active provider does not require OpenAI login", () => {
   const binDir = makeTempDir();
+  const workspace = makeTempDir();
   installFakeCodex(binDir, "provider-no-auth");
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -103,10 +107,11 @@ test("setup is ready when the active provider does not require OpenAI login", ()
 
 test("setup treats custom providers with app-server-ready config as ready", () => {
   const binDir = makeTempDir();
+  const workspace = makeTempDir();
   installFakeCodex(binDir, "env-key-provider");
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -121,10 +126,11 @@ test("setup treats custom providers with app-server-ready config as ready", () =
 
 test("setup reports not ready when app-server config read fails", () => {
   const binDir = makeTempDir();
+  const workspace = makeTempDir();
   installFakeCodex(binDir, "config-read-fails");
 
   const result = run("node", [SCRIPT, "setup", "--json"], {
-    cwd: ROOT,
+    cwd: workspace,
     env: buildEnv(binDir)
   });
 
@@ -2256,4 +2262,8 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
   const payload = JSON.parse(setup.stdout);
   assert.equal(payload.sessionRuntime.mode, "shared");
   assert.equal(payload.sessionRuntime.endpoint, "unix:/tmp/fake-broker.sock");
+  assert.equal(
+    payload.sessionRuntime.detail,
+    "This Grok host session is configured to reuse one shared Codex runtime."
+  );
 });

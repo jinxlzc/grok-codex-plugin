@@ -542,7 +542,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   if (!resumeLast && String(prompt ?? "").includes(STOP_REVIEW_TASK_MARKER)) {
     return {
       title: "Codex Stop Gate Review",
-      summary: "Stop-gate review of previous Claude turn"
+      summary: "Stop-gate review of previous Grok turn"
     };
   }
 
@@ -714,25 +714,79 @@ function spawnDetachedTaskWorker(cwd, jobId) {
     stdio: "ignore",
     windowsHide: true
   });
-  child.unref();
   return child;
 }
 
-function enqueueBackgroundTask(cwd, job, request) {
+function markBackgroundTaskSpawnFailed(job, logFile, error) {
+  const detail = error instanceof Error ? error.message : String(error);
+  const errorMessage = `Could not spawn background task worker: ${detail}`;
+  const completedAt = nowIso();
+  const existing = readStoredJob(job.workspaceRoot, job.id) ?? job;
+  const failedRecord = {
+    ...existing,
+    status: "failed",
+    phase: "failed",
+    pid: null,
+    errorMessage,
+    completedAt,
+    logFile
+  };
+  writeJobFile(job.workspaceRoot, job.id, failedRecord);
+  upsertJob(job.workspaceRoot, {
+    id: job.id,
+    status: "failed",
+    phase: "failed",
+    pid: null,
+    errorMessage,
+    completedAt,
+    logFile
+  });
+  appendLogLine(logFile, errorMessage);
+  return errorMessage;
+}
+
+function patchBackgroundTaskPid(job, pid) {
+  const existing = readStoredJob(job.workspaceRoot, job.id);
+  if (!existing || !["queued", "running"].includes(existing.status)) {
+    return;
+  }
+  writeJobFile(job.workspaceRoot, job.id, {
+    ...existing,
+    pid
+  });
+  upsertJob(job.workspaceRoot, {
+    id: job.id,
+    pid
+  });
+}
+
+export function enqueueBackgroundTask(cwd, job, request, options = {}) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
-    pid: child.pid ?? null,
+    pid: null,
     logFile,
     request
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
+
+  let child;
+  try {
+    child = (options.spawnWorker ?? spawnDetachedTaskWorker)(cwd, job.id);
+  } catch (error) {
+    throw new Error(markBackgroundTaskSpawnFailed(job, logFile, error));
+  }
+
+  child.once("error", (error) => {
+    markBackgroundTaskSpawnFailed(job, logFile, error);
+  });
+  patchBackgroundTaskPid(job, child.pid ?? null);
+  child.unref();
 
   return {
     payload: {
@@ -1103,8 +1157,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
-});
+if (import.meta.main ?? (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
+}
