@@ -1,0 +1,23 @@
+{
+  "name": "grok-codex",
+  "owner": {
+    "name": "Kaworu",
+    "email": "jinxlzc@foxmail.com"
+  },
+  "metadata": {
+    "description": "Grok Build plugin that delegates reviews and coding tasks to the local Codex CLI.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "codex",
+      "description": "Use the local Codex CLI from Grok Build to review code or delegate tasks.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Kaworu",
+        "email": "jinxlzc@foxmail.com"
+      },
+      "source": "./plugins/codex"
+    }
+  ]
+}

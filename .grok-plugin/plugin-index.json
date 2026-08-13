@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "plugins": {
+    "codex": {
+      "components": {
+        "skills": [
+          { "name": "codex-delegate", "description": "Delegate coding and review work to the local Codex CLI" },
+          { "name": "codex-cli-runtime", "description": "Internal companion contract" },
+          { "name": "codex-result-handling", "description": "Internal result presentation contract" },
+          { "name": "gpt-5-4-prompting", "description": "Internal Codex prompt-shaping guidance" }
+        ],
+        "commands": [
+          { "name": "setup", "description": "Check Codex CLI readiness" },
+          { "name": "review", "description": "Run a Codex code review" },
+          { "name": "adversarial-review", "description": "Run a challenge review" },
+          { "name": "rescue", "description": "Delegate a task to Codex" },
+          { "name": "transfer", "description": "Transfer this Grok session into Codex" },
+          { "name": "status", "description": "Show Codex jobs" },
+          { "name": "result", "description": "Show a finished Codex job" },
+          { "name": "cancel", "description": "Cancel a Codex job" }
+        ],
+        "agents": [
+          { "name": "codex-rescue", "description": "Thin forwarder that hands work to Codex" }
+        ],
+        "hooks": [
+          { "name": "SessionStart" },
+          { "name": "SessionEnd" },
+          { "name": "Stop" }
+        ],
+        "mcpServers": [
+          { "name": "codex", "description": "Companion MCP tools for local Codex" }
+        ]
+      }
+    }
+  }
+}
