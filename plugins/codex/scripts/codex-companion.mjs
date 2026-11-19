@@ -69,8 +69,19 @@ const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
-const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
+const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const EFFORT_ALIASES = new Map([
+  ["light", "low"],
+  ["extra-high", "xhigh"],
+  ["extra_high", "xhigh"],
+  ["extrahigh", "xhigh"],
+  ["maximum", "max"]
+]);
+// `spark` was gpt-5.3-codex-spark until that model retired on 2026-09-14.
+// Keep the shortcut, and point it at the current fast Codex model. Explicit
+// model ids, including retired ones, are still passed through unchanged.
+const MODEL_ALIASES = new Map([["spark", "gpt-6-luna"]]);
+const EFFORT_HELP = "none|minimal|low|medium|high|xhigh|max|ultra";
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Grok turn.";
 
 function printUsage() {
@@ -80,7 +91,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      `  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <${EFFORT_HELP}>] [prompt]`,
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -116,16 +127,17 @@ function normalizeReasoningEffort(effort) {
   if (effort == null) {
     return null;
   }
-  const normalized = String(effort).trim().toLowerCase();
+  const normalized = String(effort).trim().toLowerCase().replace(/\s+/g, "-");
   if (!normalized) {
     return null;
   }
-  if (!VALID_REASONING_EFFORTS.has(normalized)) {
+  const aliased = EFFORT_ALIASES.get(normalized) ?? normalized;
+  if (!VALID_REASONING_EFFORTS.has(aliased)) {
     throw new Error(
-      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh.`
+      `Unsupported reasoning effort "${effort}". Use one of: ${EFFORT_HELP}. light maps to low.`
     );
   }
-  return normalized;
+  return aliased;
 }
 
 function normalizeArgv(argv) {

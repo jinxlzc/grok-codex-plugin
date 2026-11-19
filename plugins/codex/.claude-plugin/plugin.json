@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Use the local Codex CLI from Grok Build to review code or delegate tasks.",
   "author": {
     "name": "Kaworu",
@@ -10,5 +10,12 @@
   "homepage": "https://github.com/jinxlzc/grok-codex-plugin",
   "repository": "https://github.com/jinxlzc/grok-codex-plugin",
   "license": "Apache-2.0",
-  "keywords": ["codex", "openai", "review", "rescue", "delegation", "mcp"]
+  "keywords": [
+    "codex",
+    "openai",
+    "review",
+    "rescue",
+    "delegation",
+    "mcp"
+  ]
 }

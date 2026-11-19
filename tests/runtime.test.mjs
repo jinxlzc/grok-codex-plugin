@@ -786,8 +786,36 @@ test("task forwards model selection and reasoning effort to app-server turn/star
 
   assert.equal(result.status, 0, result.stderr);
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(fakeState.lastTurnStart.model, "gpt-5.3-codex-spark");
+  assert.equal(fakeState.lastTurnStart.model, "gpt-6-luna");
   assert.equal(fakeState.lastTurnStart.effort, "low");
+
+  const explicit = run(
+    "node",
+    [SCRIPT, "task", "--model", "gpt-5.3-codex-spark", "--effort", "light", "keep the explicit id"],
+    {
+      cwd: repo,
+      env: buildEnv(binDir)
+    }
+  );
+  assert.equal(explicit.status, 0, explicit.stderr);
+  const explicitState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(explicitState.lastTurnStart.model, "gpt-5.3-codex-spark");
+  assert.equal(explicitState.lastTurnStart.effort, "low");
+
+  const ultra = run("node", [SCRIPT, "task", "--effort", "ultra", "use the deepest effort"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(ultra.status, 0, ultra.stderr);
+  const ultraState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(ultraState.lastTurnStart.effort, "ultra");
+
+  const rejected = run("node", [SCRIPT, "task", "--effort", "turbo", "no such effort"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /Unsupported reasoning effort/);
 });
 
 test("task logs reasoning summaries and assistant messages to the job log", () => {
@@ -2040,6 +2068,54 @@ test("stop hook logs running tasks to stderr without blocking when the review ga
   assert.match(blocked.stderr, /Codex task task-live is still running/i);
   assert.match(blocked.stderr, /\/codex:status/i);
   assert.match(blocked.stderr, /\/codex:cancel task-live/i);
+});
+
+test("stop hook skips session-close events and still reviews an end_turn", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const setup = run("node", [SCRIPT, "setup", "--enable-review-gate", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(setup.status, 0, setup.stderr);
+  fs.rmSync(fakeStatePath, { force: true });
+
+  const closed = run("node", [STOP_HOOK], {
+    cwd: repo,
+    env: buildEnv(binDir),
+    input: JSON.stringify({
+      cwd: repo,
+      sessionId: "sess-shutdown",
+      reason: "shutdown",
+      lastAssistantMessage: "session is closing"
+    })
+  });
+  assert.equal(closed.status, 0, closed.stderr);
+  assert.equal(closed.stdout.trim(), "");
+  assert.equal(fs.existsSync(fakeStatePath), false);
+
+  const reviewed = run("node", [STOP_HOOK], {
+    cwd: repo,
+    env: buildEnv(binDir),
+    input: JSON.stringify({
+      cwd: repo,
+      sessionId: "sess-end-turn",
+      reason: "end_turn",
+      lastAssistantMessage: "I completed the refactor and updated the retry logic."
+    })
+  });
+  assert.equal(reviewed.status, 0, reviewed.stderr);
+  const payload = JSON.parse(reviewed.stdout);
+  assert.equal(payload.decision, "block");
+  const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  assert.match(fakeState.lastTurnStart.prompt, /I completed the refactor and updated the retry logic\./);
 });
 
 test("stop hook allows the stop when the review gate is enabled and the stop-time review task is clean", () => {

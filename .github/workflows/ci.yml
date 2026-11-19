@@ -8,9 +8,33 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+      - run: npm run check-version
+
+  plugin:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm test
+      - name: Install Grok Build
+        run: |
+          curl -fsSL https://x.ai/cli/install.sh | bash
+          echo "$HOME/.grok/bin" >> "$GITHUB_PATH"
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex@latest
+      - name: Validate the plugin manifest
+        run: grok plugin validate plugins/codex
+      - name: Test against the installed CLIs
+        run: npm test
+        env:
+          REQUIRE_CODEX: "1"

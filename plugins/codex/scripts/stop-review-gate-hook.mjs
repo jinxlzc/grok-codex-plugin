@@ -144,6 +144,20 @@ function runStopReview(cwd, input = {}) {
   }
 }
 
+function stopReason(input = {}) {
+  const reason = input.reason ?? input.stop_reason ?? null;
+  return typeof reason === "string" && reason.trim() ? reason.trim() : null;
+}
+
+// Current Grok fires Stop for a finished turn (`end_turn`) and again when the
+// session itself is closing (`channel_closed` / `shutdown`). Only the turn
+// completion should spend a Codex review. Hosts that omit `reason` keep the
+// previous behavior.
+function shouldRunStopGate(input = {}) {
+  const reason = stopReason(input);
+  return reason == null || reason === "end_turn";
+}
+
 function main() {
   const input = readHookInput();
   const cwd = input.cwd || input.workspaceRoot || process.env.GROK_WORKSPACE_ROOT || process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -155,6 +169,11 @@ function main() {
   const runningTaskNote = runningJob
     ? `Codex task ${runningJob.id} is still running. Check /codex:status and use /codex:cancel ${runningJob.id} if you want to stop it before ending the session.`
     : null;
+
+  if (!shouldRunStopGate(input)) {
+    logNote(runningTaskNote);
+    return;
+  }
 
   if (!config.stopReviewGate) {
     logNote(runningTaskNote);
