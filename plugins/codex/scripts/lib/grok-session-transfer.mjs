@@ -13,6 +13,80 @@ function grokHome(env = process.env) {
   return env.GROK_HOME || path.join(os.homedir(), ".grok");
 }
 
+const CWD_DIRNAME_MAX_BYTES = 255;
+
+// Match Rust `urlencoding::encode`: percent-encode every UTF-8 byte except
+// RFC 3986 unreserved characters. `encodeURIComponent` leaves !*'() intact,
+// which does not match Grok's session directory names.
+export function encodeGrokCwdDirname(cwd) {
+  const resolved = path.resolve(cwd);
+  const bytes = Buffer.from(resolved, "utf8");
+  let encoded = "";
+  for (const byte of bytes) {
+    const char = String.fromCharCode(byte);
+    if (/[A-Za-z0-9\-._~]/.test(char)) {
+      encoded += char;
+    } else {
+      encoded += `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    }
+  }
+  return encoded;
+}
+
+function sessionsRoot(env = process.env) {
+  return path.join(grokHome(env), "sessions");
+}
+
+function readCwdMarker(dir) {
+  const marker = path.join(dir, ".cwd");
+  if (!fs.existsSync(marker)) {
+    return null;
+  }
+  try {
+    const text = fs.readFileSync(marker, "utf8").trim();
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
+// Short paths use the URL-encoded cwd. Paths whose encoding exceeds 255 bytes
+// are stored as `{slug}-{blake3}` with the original path in a `.cwd` file.
+// Scanning that marker avoids taking a dependency on blake3 inside the plugin.
+export function resolveGrokCwdBucket(cwd, env = process.env) {
+  const resolved = path.resolve(cwd);
+  const root = sessionsRoot(env);
+  const encoded = encodeGrokCwdDirname(resolved);
+  const primary = path.join(root, encoded);
+  if (fs.existsSync(primary)) {
+    return primary;
+  }
+
+  const legacy = path.join(root, encodeURIComponent(resolved));
+  if (legacy !== primary && fs.existsSync(legacy)) {
+    return legacy;
+  }
+
+  if (fs.existsSync(root)) {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const dir = path.join(root, entry.name);
+      const marked = readCwdMarker(dir);
+      if (!marked) {
+        continue;
+      }
+      const markedResolved = path.isAbsolute(marked) ? path.resolve(marked) : marked;
+      if (marked === resolved || markedResolved === resolved) {
+        return dir;
+      }
+    }
+  }
+
+  return encoded.length > CWD_DIRNAME_MAX_BYTES ? null : primary;
+}
+
 function claudeProjectsDir() {
   return path.join(os.homedir(), ".claude", "projects");
 }
@@ -107,11 +181,19 @@ export function parseTranscriptTurns(filePath, options = {}) {
     if (record?.synthetic_reason) {
       continue;
     }
-    if (record?.type && !["user", "assistant"].includes(record.type)) {
+    const declaredRole = record?.role || record?.message?.role || null;
+    const declaredType = record?.type || null;
+    const role =
+      declaredType === "assistant" || declaredRole === "assistant"
+        ? "assistant"
+        : declaredType === "user" || declaredRole === "user"
+          ? "user"
+          : declaredType || declaredRole
+            ? null
+            : "user";
+    if (!role) {
       continue;
     }
-
-    const role = record?.type === "assistant" || record?.message?.role === "assistant" ? "assistant" : "user";
     const text = extractText(record?.content ?? record?.message?.content ?? record?.message).trim();
     if (!text) {
       continue;
@@ -149,8 +231,11 @@ export function resolveGrokSessionDir(cwd, sessionId, env = process.env) {
   if (!sessionId) {
     return null;
   }
-  const encodedCwd = encodeURIComponent(path.resolve(cwd));
-  const sessionDir = path.join(grokHome(env), "sessions", encodedCwd, sessionId);
+  const bucket = resolveGrokCwdBucket(cwd, env);
+  if (!bucket) {
+    return null;
+  }
+  const sessionDir = path.join(bucket, sessionId);
   if (fs.existsSync(path.join(sessionDir, "chat_history.jsonl"))) {
     return sessionDir;
   }
@@ -158,15 +243,15 @@ export function resolveGrokSessionDir(cwd, sessionId, env = process.env) {
 }
 
 export function latestGrokSessionDir(cwd, env = process.env) {
-  const sessionsRoot = path.join(grokHome(env), "sessions", encodeURIComponent(path.resolve(cwd)));
-  if (!fs.existsSync(sessionsRoot)) {
+  const bucket = resolveGrokCwdBucket(cwd, env);
+  if (!bucket || !fs.existsSync(bucket)) {
     return null;
   }
   const entries = fs
-    .readdirSync(sessionsRoot, { withFileTypes: true })
+    .readdirSync(bucket, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => {
-      const dir = path.join(sessionsRoot, entry.name);
+      const dir = path.join(bucket, entry.name);
       const history = path.join(dir, "chat_history.jsonl");
       if (!fs.existsSync(history)) {
         return null;
@@ -246,13 +331,10 @@ export function resolveTransferSource(cwd, options = {}) {
   if (sessionId) {
     const sessionDir = resolveGrokSessionDir(cwd, sessionId, env);
     if (!sessionDir) {
-      const expectedTranscript = path.join(
-        grokHome(env),
-        "sessions",
-        encodeURIComponent(path.resolve(cwd)),
-        sessionId,
-        "chat_history.jsonl"
-      );
+      const bucket = resolveGrokCwdBucket(cwd, env);
+      const expectedTranscript = bucket
+        ? path.join(bucket, sessionId, "chat_history.jsonl")
+        : path.join(sessionsRoot(env), "<cwd-bucket>", sessionId, "chat_history.jsonl");
       throw new Error(
         `Could not find the transcript for the current Grok session "${sessionId}" at ${expectedTranscript}. ` +
           "Retry from that Grok session after its transcript is saved, or pass --source <session-dir-or-chat_history.jsonl>."

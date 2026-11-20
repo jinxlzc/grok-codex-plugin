@@ -56,6 +56,41 @@ function startServer(env) {
   };
 }
 
+test("MCP tool definitions name their purpose, parameters, and side effects", async () => {
+  const server = startServer(process.env);
+  try {
+    const init = await server.request("initialize", { protocolVersion: "2025-06-18", capabilities: {} });
+    assert.equal(init.result.protocolVersion, "2025-06-18");
+    assert.match(init.result.instructions, /local Codex CLI/);
+    const listed = await server.request("tools/list", {});
+    assert.equal(listed.result.tools.length, 9);
+    for (const tool of listed.result.tools) {
+      assert.equal(typeof tool.title, "string");
+      assert.ok(tool.description.length > 120, tool.name);
+      assert.match(tool.description, /Use /);
+      const writes = new Set(["codex_setup", "codex_rescue", "codex_transfer", "codex_cancel"]);
+      assert.equal(tool.annotations.readOnlyHint, !writes.has(tool.name), tool.name);
+      assert.equal(typeof tool.annotations.destructiveHint, "boolean");
+      assert.equal(typeof tool.annotations.idempotentHint, "boolean");
+      assert.equal(typeof tool.annotations.openWorldHint, "boolean");
+      assert.equal(tool.inputSchema.type, "object");
+      assert.equal(tool.inputSchema.additionalProperties, false);
+      for (const [name, schema] of Object.entries(tool.inputSchema.properties)) {
+        assert.equal(typeof schema.description, "string", `${tool.name}.${name}`);
+        assert.ok(schema.description.length > 20, `${tool.name}.${name}`);
+      }
+    }
+    const rescue = listed.result.tools.find((tool) => tool.name === "codex_rescue");
+    assert.deepEqual(rescue.inputSchema.required, ["prompt"]);
+    assert.ok(rescue.inputSchema.properties.effort.enum.includes("ultra"));
+    assert.equal(rescue.annotations.readOnlyHint, false);
+    const review = listed.result.tools.find((tool) => tool.name === "codex_review");
+    assert.equal(review.annotations.readOnlyHint, true);
+  } finally {
+    server.close();
+  }
+});
+
 test("MCP server lists companion tools and can run setup", async () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);

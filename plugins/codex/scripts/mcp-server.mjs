@@ -11,128 +11,273 @@ const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const COMPANION = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
 const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, "plugin.json"), "utf8"));
 
+const CWD_SCHEMA = {
+  type: "string",
+  description: "Absolute workspace directory. Defaults to the MCP server process cwd, which Grok sets to the session workspace."
+};
+const REVIEW_SCOPE_SCHEMA = {
+  type: "string",
+  enum: ["auto", "working-tree", "branch"],
+  description: "auto picks a branch review when base is set, otherwise the working tree. working-tree reviews uncommitted changes. branch reviews base...HEAD."
+};
+const MODEL_SCHEMA = {
+  type: "string",
+  description: "Codex model id passed through to the local CLI. Omit it to use the user's Codex default (currently gpt-6.2-sol when unset). The alias spark maps to gpt-6-luna. Explicit ids, including older API-key models, are not rewritten."
+};
+const EFFORT_SCHEMA = {
+  type: "string",
+  enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+  description: "Reasoning effort for this Codex turn. Current bundled models advertise low, medium, high, xhigh, max, and ultra; gpt-6-luna has no ultra. none and minimal remain for older models. The CLI alias light is accepted and mapped to low."
+};
+
 const TOOLS = [
   {
     name: "codex_setup",
-    description: "Check whether the local Codex CLI is installed and authenticated. Optionally enable or disable the stop-time review gate.",
+    title: "Check Codex setup",
+    description: "Check whether the local Codex CLI is installed and logged in, and optionally toggle the stop-time review gate. Use this before codex_review, codex_rescue, or codex_transfer when setup is unknown. Do not use it to run a review or edit files. Enabling the gate writes plugin state and makes the Stop hook spend Codex usage on later turns; disabling it only clears that flag. Returns JSON with ready, auth detail, and reviewGateEnabled.",
+    annotations: {
+      title: "Check Codex setup",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        cwd: { type: "string", description: "Workspace directory. Defaults to the current working directory." },
-        enable_review_gate: { type: "boolean" },
-        disable_review_gate: { type: "boolean" }
+        cwd: CWD_SCHEMA,
+        enable_review_gate: {
+          type: "boolean",
+          description: "Persist the stop-time review gate on for this workspace. Ignored when omitted. Do not set this together with disable_review_gate."
+        },
+        disable_review_gate: {
+          type: "boolean",
+          description: "Persist the stop-time review gate off for this workspace. Ignored when omitted."
+        }
       }
     }
   },
   {
     name: "codex_review",
-    description: "Run a read-only Codex review of uncommitted changes or a branch vs a base ref.",
+    title: "Read-only Codex review",
+    description: "Run a read-only Codex review of the working tree or of a branch against a base ref. Use it for a normal code review with no extra challenge text. Use codex_adversarial_review instead when the review should question the design, and codex_rescue when Codex should investigate or edit. This tool does not modify the workspace. It consumes Codex usage and returns Codex's review text, or a job id when background is true.",
+    annotations: {
+      title: "Read-only Codex review",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        cwd: { type: "string" },
-        base: { type: "string", description: "Base git ref for branch review." },
-        scope: { type: "string", enum: ["auto", "working-tree", "branch"] },
-        model: { type: "string" },
-        background: { type: "boolean" }
+        cwd: CWD_SCHEMA,
+        base: {
+          type: "string",
+          description: "Git ref to diff against, such as main. Required for a useful branch review. Omit it for uncommitted changes."
+        },
+        scope: REVIEW_SCOPE_SCHEMA,
+        model: MODEL_SCHEMA,
+        background: {
+          type: "boolean",
+          description: "When true, enqueue the review and return immediately with a job id. Poll codex_status or read codex_result. Defaults to false, which waits for the review."
+        }
       }
     }
   },
   {
     name: "codex_adversarial_review",
-    description: "Run a steerable Codex review that challenges design choices. Accepts optional focus text.",
+    title: "Adversarial Codex review",
+    description: "Run a read-only Codex review that challenges the chosen design, with the same target selection as codex_review. Use it when the user wants a steerable critique or passes focus text. Use codex_review for an ordinary review, and codex_rescue to change code. This tool does not modify the workspace. The optional focus string is the only review instruction; it is not a shell command.",
+    annotations: {
+      title: "Adversarial Codex review",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        cwd: { type: "string" },
-        base: { type: "string" },
-        scope: { type: "string", enum: ["auto", "working-tree", "branch"] },
-        model: { type: "string" },
-        background: { type: "boolean" },
-        focus: { type: "string", description: "Optional extra review focus." }
+        cwd: CWD_SCHEMA,
+        base: {
+          type: "string",
+          description: "Git ref to diff against, such as main. Omit it to review uncommitted changes."
+        },
+        scope: REVIEW_SCOPE_SCHEMA,
+        model: MODEL_SCHEMA,
+        background: {
+          type: "boolean",
+          description: "When true, enqueue the review and return a job id instead of waiting. Defaults to false."
+        },
+        focus: {
+          type: "string",
+          description: "Extra review focus in natural language, for example 'challenge the caching and retry design'. Omit it for the default adversarial prompt."
+        }
       }
     }
   },
   {
     name: "codex_rescue",
-    description: "Delegate an investigation or implementation task to the local Codex CLI.",
+    title: "Delegate a task to Codex",
+    description: "Hand an investigation or implementation task to the local Codex CLI. Use it to debug, edit, or continue a previous Codex thread in this repo. Use codex_review or codex_adversarial_review for read-only reviews, and codex_task_resume_candidate before assuming a thread exists. Writes are on unless write is false. resume continues the latest Codex task thread; fresh forces a new thread. Returns the final Codex message, or a job id when background is true.",
+    annotations: {
+      title: "Delegate a task to Codex",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["prompt"],
       properties: {
-        cwd: { type: "string" },
-        prompt: { type: "string" },
-        write: { type: "boolean", description: "Allow workspace writes. Defaults to true for rescue." },
-        resume: { type: "boolean" },
-        fresh: { type: "boolean" },
-        model: { type: "string" },
-        effort: { type: "string", enum: ["none", "minimal", "low", "medium", "high", "xhigh"] },
-        background: { type: "boolean" }
+        cwd: CWD_SCHEMA,
+        prompt: {
+          type: "string",
+          description: "The task Codex should carry out. Do not include routing flags such as --resume or --model; pass those as separate fields."
+        },
+        write: {
+          type: "boolean",
+          description: "Allow Codex to edit the workspace. Defaults to true. Set false for a read-only investigation."
+        },
+        resume: {
+          type: "boolean",
+          description: "Continue the latest Codex task thread in this workspace. Do not combine with fresh."
+        },
+        fresh: {
+          type: "boolean",
+          description: "Start a new Codex thread even if an earlier task exists. Do not combine with resume."
+        },
+        model: MODEL_SCHEMA,
+        effort: EFFORT_SCHEMA,
+        background: {
+          type: "boolean",
+          description: "When true, enqueue the task and return a job id. Defaults to false, which waits for Codex to finish."
+        }
       }
     }
   },
   {
     name: "codex_transfer",
-    description: "Transfer the current Grok session (or an explicit source) into a resumable Codex thread.",
+    title: "Transfer a session into Codex",
+    description: "Create a persistent Codex thread from the current Grok session, or from an explicit Grok or Claude Code transcript, and return a codex resume command. Use it when the user wants to keep working in Codex itself. Use codex_rescue to continue inside Grok, and codex_review for a review. This writes a Codex session on disk. It does not edit the git workspace. Claude JSONL under ~/.claude/projects uses Codex's importer; Grok chat_history.jsonl is summarized into a handoff prompt.",
+    annotations: {
+      title: "Transfer a session into Codex",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        cwd: { type: "string" },
-        source: { type: "string", description: "Grok session dir, chat_history.jsonl, or Claude JSONL." }
+        cwd: CWD_SCHEMA,
+        source: {
+          type: "string",
+          description: "Optional Grok session directory, chat_history.jsonl, or Claude Code JSONL. Omit it to use GROK_SESSION_ID / the newest session for cwd, including long-path buckets stored with a .cwd marker."
+        }
       }
     }
   },
   {
     name: "codex_status",
-    description: "List Codex jobs for this repository, or inspect one job.",
+    title: "Show Codex job status",
+    description: "List Codex jobs tracked for this repository, or inspect one job by id. Use it to see whether a background review or rescue is still running. Use codex_result for the stored final text of a finished job, and codex_cancel to stop one. This only reads local job state. It does not start Codex. wait polls until the selected job finishes or the companion timeout elapses.",
+    annotations: {
+      title: "Show Codex job status",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        cwd: { type: "string" },
-        job_id: { type: "string" },
-        all: { type: "boolean" },
-        wait: { type: "boolean" }
+        cwd: CWD_SCHEMA,
+        job_id: {
+          type: "string",
+          description: "Job id returned by a background tool, such as task-abc123. Omit it to list recent jobs."
+        },
+        all: {
+          type: "boolean",
+          description: "When true, include jobs from other sessions in this workspace. Defaults to false, which prefers the current Grok session."
+        },
+        wait: {
+          type: "boolean",
+          description: "When true and job_id is set, poll until that job leaves the running state. Defaults to false."
+        }
       }
     }
   },
   {
     name: "codex_result",
-    description: "Show the stored final output for a finished Codex job.",
+    title: "Read a finished Codex job",
+    description: "Show the stored final output of one finished Codex job. Use it after codex_status reports a completed background review or rescue. Use codex_status to list jobs, and codex_cancel for a job that is still running. This reads the local job file and does not start a new Codex turn. Omit job_id only when the companion can infer the latest finished job.",
+    annotations: {
+      title: "Read a finished Codex job",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        cwd: { type: "string" },
-        job_id: { type: "string" }
+        cwd: CWD_SCHEMA,
+        job_id: {
+          type: "string",
+          description: "Job id to read. Omit it to read the newest finished job in this workspace."
+        }
       }
     }
   },
   {
     name: "codex_cancel",
-    description: "Cancel an active background Codex job.",
+    title: "Cancel a Codex job",
+    description: "Cancel one active background Codex job and interrupt its app-server turn when the thread id is known. Use it to stop a review or rescue started with background true. Use codex_status to find the id, and codex_result only after the job has finished. Cancelling marks the local job cancelled and signals its process; it does not revert files Codex already wrote. Passing no job_id cancels the current session's active job when one exists.",
+    annotations: {
+      title: "Cancel a Codex job",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        cwd: { type: "string" },
-        job_id: { type: "string" }
+        cwd: CWD_SCHEMA,
+        job_id: {
+          type: "string",
+          description: "Active job id to cancel. Omit it to cancel the active job for the current session."
+        }
       }
     }
   },
   {
     name: "codex_task_resume_candidate",
-    description: "Check whether this Grok session has a resumable Codex rescue thread.",
+    title: "Find a resumable Codex thread",
+    description: "Check whether this Grok session already has a Codex rescue thread that codex_rescue can resume. Use it before starting a follow-up rescue so you can ask the user whether to continue or start fresh. Do not use it as a substitute for codex_status, which lists background jobs, or for codex_rescue, which actually runs Codex. This only reads local job metadata and returns JSON with available true or false.",
+    annotations: {
+      title: "Find a resumable Codex thread",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        cwd: { type: "string" }
+        cwd: CWD_SCHEMA
       }
     }
   }
@@ -253,11 +398,14 @@ async function handleRequest(message) {
   if (method === "initialize") {
     ok(id, {
       protocolVersion: params?.protocolVersion ?? "2024-11-05",
-      capabilities: { tools: {} },
+      capabilities: { tools: { listChanged: false } },
       serverInfo: {
         name: "grok-codex-plugin",
+        title: "Grok Codex",
         version: PLUGIN_MANIFEST.version ?? "0.0.0"
-      }
+      },
+      instructions:
+        "These tools drive the local Codex CLI through codex-companion. They need Node.js and a codex binary on PATH. Reviews are read-only. codex_rescue can edit the workspace unless write is false. Login is the user's existing Codex auth (codex login); this server stores no API key."
     });
     return;
   }

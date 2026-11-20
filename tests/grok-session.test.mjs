@@ -8,6 +8,7 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import {
   buildGrokHandoffPrompt,
+  encodeGrokCwdDirname,
   parseTranscriptTurns,
   resolveTransferSource
 } from "../plugins/codex/scripts/lib/grok-session-transfer.mjs";
@@ -33,6 +34,71 @@ function writeGrokSession(home, cwd, sessionId, turns, extraSummary = {}) {
   );
   return sessionDir;
 }
+
+test("encodeGrokCwdDirname matches Grok's urlencoding, not encodeURIComponent", () => {
+  assert.equal(encodeGrokCwdDirname("/workspace"), "%2Fworkspace");
+  assert.equal(encodeGrokCwdDirname("/tmp/a b"), "%2Ftmp%2Fa%20b");
+  assert.equal(encodeGrokCwdDirname("/tmp/foo!"), "%2Ftmp%2Ffoo%21");
+  assert.notEqual(encodeGrokCwdDirname("/tmp/foo!"), encodeURIComponent("/tmp/foo!"));
+});
+
+test("parseTranscriptTurns reads current Grok chat items and legacy role records", () => {
+  const dir = makeTempDir();
+  const history = path.join(dir, "chat_history.jsonl");
+  fs.writeFileSync(
+    history,
+    [
+      { type: "system", content: "hidden system prompt" },
+      { type: "user", content: [{ type: "text", text: "Fix the flaky test" }] },
+      { type: "user", synthetic_reason: "system_reminder", content: [{ type: "text", text: "ignore" }] },
+      { type: "reasoning", summary: [{ type: "summary_text", text: "thinking" }] },
+      { type: "assistant", content: "I will inspect the suite.", model_id: "gpt-6.2-sol" },
+      { type: "tool_result", tool_call_id: "1", content: "noise" },
+      { role: "user", content: "legacy user" },
+      { role: "assistant", content: "legacy assistant" },
+      { role: "system", content: "legacy system" }
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")
+  );
+
+  const parsed = parseTranscriptTurns(history);
+  assert.deepEqual(
+    parsed.turns.map((turn) => `${turn.role}:${turn.text}`),
+    [
+      "user:Fix the flaky test",
+      "assistant:I will inspect the suite.",
+      "user:legacy user",
+      "assistant:legacy assistant"
+    ]
+  );
+});
+
+test("resolveTransferSource finds a long-path session stored with a .cwd marker", () => {
+  const home = makeTempDir();
+  const repo = path.join(home, "repo", "中".repeat(80));
+  fs.mkdirSync(repo, { recursive: true });
+  const bucket = path.join(home, ".grok", "sessions", "workspace-deadbeefcafebabe");
+  const sessionDir = path.join(bucket, "sess-long");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.writeFileSync(path.join(bucket, ".cwd"), `${path.resolve(repo)}\n`);
+  fs.writeFileSync(
+    path.join(sessionDir, "chat_history.jsonl"),
+    `${JSON.stringify({ type: "user", content: [{ type: "text", text: "Continue the long path" }] })}\n`
+  );
+
+  const source = resolveTransferSource(repo, {
+    env: {
+      HOME: home,
+      GROK_HOME: path.join(home, ".grok"),
+      GROK_SESSION_ID: "sess-long"
+    }
+  });
+
+  assert.equal(source.kind, "grok");
+  assert.equal(source.sessionDir, sessionDir);
+  assert.match(buildGrokHandoffPrompt(source).prompt, /Continue the long path/);
+});
 
 test("parseTranscriptTurns keeps user and assistant text and skips tool noise", () => {
   const dir = makeTempDir();
